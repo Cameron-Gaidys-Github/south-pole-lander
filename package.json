@@ -1,0 +1,22 @@
+{
+  "name": "south-pole-lander",
+  "version": "1.0.0",
+  "description": "Lunar south pole landing simulator: Starship HLS and Blue Moon MK2",
+  "main": "index.js",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "dev": "node tools/build.mjs --watch",
+    "test": "node test/autoland.test.mjs && node test/manual.test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "pngjs": "^7.0.0"
+  },
+  "type": "module"
+}

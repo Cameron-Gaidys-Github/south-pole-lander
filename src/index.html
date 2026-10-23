@@ -1,0 +1,312 @@
+<title>South Pole Lander</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed 3D view; telemetry pinned top, flight controls pinned bottom,
+   setup and debrief as sheets over the scene. Single dark look (cockpit). */
+:root {
+  color-scheme: dark;
+  --void: #050506;            /* sky / page */
+  --panel: rgba(16, 17, 20, 0.78);
+  --panel-solid: #121316;
+  --line: rgba(222, 214, 196, 0.14);
+  --text: #e9e5dc;            /* regolith-white */
+  --muted: #9a968c;
+  --amber: #f2a93b;           /* sodium annunciator amber: the accent */
+  --amber-dim: rgba(242, 169, 59, 0.16);
+  --go: #6fd39a;
+  --caution: #f2c14e;
+  --warn: #ff6a55;
+  --f-display: "Chakra Petch", "Bahnschrift", "DIN Alternate", "Arial Narrow", sans-serif;
+  --f-body: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body { margin: 0; }
+body { background: var(--void); color: var(--text); font-family: var(--f-body); overflow: hidden; -webkit-tap-highlight-color: transparent; }
+#view { position: fixed; inset: 0; touch-action: none; }
+#view canvas { display: block; width: 100%; height: 100%; }
+button { font: inherit; color: inherit; }
+button:focus-visible, input:focus-visible, label:focus-within { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+.hud { position: fixed; z-index: 5; pointer-events: none; }
+.hud * { pointer-events: auto; }
+.hud-top {
+  top: 0; left: 0; right: 0;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 10px);
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  display: flex; gap: 10px; align-items: flex-start; justify-content: space-between;
+  pointer-events: none;
+}
+.tele {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 10px; display: grid; grid-template-columns: repeat(2, minmax(0, auto)); column-gap: 16px; row-gap: 3px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  font-family: var(--f-data); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.tele .k { color: var(--muted); font-family: var(--f-display); font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; align-self: center; }
+.tele .v { text-align: right; white-space: nowrap; }
+.tele .v.go { color: var(--go); } .tele .v.caution { color: var(--caution); } .tele .v.warn { color: var(--warn); }
+.tele .big { font-size: 17px; font-weight: 500; }
+.side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.chip {
+  font-family: var(--f-display); font-weight: 600; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 4px 8px; border-radius: 4px; background: var(--panel); border: 1px solid var(--line);
+}
+.chip.phase { color: var(--amber); border-color: rgba(242,169,59,0.5); }
+.chip.alarm { color: #1b1208; background: var(--warn); border-color: var(--warn); }
+.chip.met { font-family: var(--f-data); font-weight: 500; letter-spacing: 0.02em; }
+#minimap { width: 132px; height: 132px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-solid); }
+.ticker {
+  font-family: var(--f-data); font-size: 11px; color: var(--muted); max-width: 230px; text-align: right;
+  background: var(--panel); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--line);
+}
+
+.hud-bottom {
+  left: 0; right: 0; bottom: 0;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+}
+.bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button {
+  background: transparent; border: 0; padding: 9px 11px; min-height: 40px;
+  font-family: var(--f-display); font-weight: 600; font-size: 12px; letter-spacing: 0.08em; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--amber-dim); color: var(--amber); }
+.seg button:disabled { opacity: 0.35; cursor: default; }
+.pilot { display: flex; gap: 12px; align-items: flex-end; justify-content: space-between; }
+.stick {
+  width: 128px; height: 128px; border-radius: 50%; position: relative; touch-action: none;
+  background: radial-gradient(circle, rgba(242,169,59,0.08), rgba(16,17,20,0.78) 70%); border: 1px solid var(--line);
+}
+.stick::before, .stick::after { content: ""; position: absolute; background: var(--line); }
+.stick::before { left: 50%; top: 10%; bottom: 10%; width: 1px; }
+.stick::after { top: 50%; left: 10%; right: 10%; height: 1px; }
+.knob { position: absolute; width: 44px; height: 44px; left: 42px; top: 42px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 4px rgba(242,169,59,0.2); z-index: 1; }
+.stick-label { font-family: var(--f-display); font-size: 10px; letter-spacing: 0.1em; color: var(--muted); text-align: center; margin-top: 4px; text-transform: uppercase; }
+.rate { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.btn {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; min-height: 44px; padding: 8px 12px;
+  font-family: var(--f-display); font-weight: 600; letter-spacing: 0.06em; font-size: 13px; cursor: pointer;
+}
+.btn.primary { background: var(--amber); color: #1b1208; border-color: var(--amber); }
+.btn:active { transform: translateY(1px); }
+.throttle { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.throttle input[type=range] { writing-mode: vertical-lr; direction: rtl; height: 128px; width: 36px; accent-color: var(--amber); }
+.readout { font-family: var(--f-data); font-size: 12px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* sheets */
+.sheet {
+  position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+  background: rgba(5,5,6,0.62);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px;
+}
+.card {
+  width: min(640px, 100%); max-height: 100%; overflow-y: auto; background: var(--panel-solid);
+  border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 18px;
+}
+.eyebrow { font-family: var(--f-display); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--amber); }
+h1 { font-family: var(--f-display); font-weight: 700; font-size: clamp(26px, 6vw, 36px); line-height: 1.05; margin: 4px 0 6px; text-wrap: balance; letter-spacing: 0.01em; }
+h2 { font-family: var(--f-display); font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+p { margin: 0; line-height: 1.5; max-width: 65ch; }
+.lede { color: var(--muted); font-size: 15px; }
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.choice { position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 12px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.choice input { position: absolute; opacity: 0; pointer-events: none; }
+.choice:has(input:checked) { border-color: var(--amber); background: var(--amber-dim); }
+.choice .t { font-family: var(--f-display); font-weight: 600; font-size: 16px; }
+.choice .d { color: var(--muted); font-size: 13px; line-height: 1.35; }
+.choice .specs { font-family: var(--f-data); font-size: 11px; color: var(--text); opacity: 0.85; line-height: 1.5; margin-top: 4px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1 1 220px; }
+.field label { font-size: 13px; color: var(--muted); }
+.field input[type=range] { width: 100%; accent-color: var(--amber); }
+.toggle { display: flex; gap: 10px; align-items: center; cursor: pointer; font-size: 14px; }
+.toggle input { width: 20px; height: 20px; accent-color: var(--amber); }
+.note { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.status { font-family: var(--f-data); font-size: 12px; }
+.status.go { color: var(--go); } .status.warn { color: var(--warn); }
+details { border-top: 1px solid var(--line); padding-top: 12px; }
+summary { cursor: pointer; font-family: var(--f-display); letter-spacing: 0.08em; text-transform: uppercase; font-size: 12px; color: var(--muted); }
+details ul { padding-left: 18px; margin: 10px 0 0; display: grid; gap: 6px; font-size: 13px; color: var(--muted); line-height: 1.45; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.actions .btn { flex: 1 1 160px; }
+.outcome { font-family: var(--f-display); font-weight: 700; font-size: clamp(28px, 7vw, 40px); letter-spacing: 0.02em; }
+.outcome.go { color: var(--go); } .outcome.caution { color: var(--caution); } .outcome.warn { color: var(--warn); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stat { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.stat .k { font-family: var(--f-display); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font-family: var(--f-data); font-size: 16px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.faults { margin: 0; padding-left: 18px; color: var(--caution); font-size: 14px; display: grid; gap: 4px; }
+.progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--amber); width: 0%; transition: width 0.2s; }
+.badge { display: inline-block; font-family: var(--f-display); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 6px; border-radius: 3px; border: 1px solid var(--caution); color: var(--caution); }
+.keys { font-family: var(--f-data); font-size: 12px; color: var(--muted); line-height: 1.7; }
+kbd { font-family: var(--f-data); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--text); }
+@media (max-width: 520px) {
+  .tele { font-size: 11px; column-gap: 10px; padding: 6px 8px; }
+  .tele .big { font-size: 15px; }
+  #minimap { width: 104px; height: 104px; }
+  .ticker { max-width: 150px; }
+  .stick { width: 112px; height: 112px; }
+  .knob { left: 34px; top: 34px; }
+  .throttle input[type=range] { height: 112px; }
+}
+@media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } }
+</style>
+
+<div id="view"></div>
+
+<div class="hud hud-top" id="hudTop" hidden>
+  <div class="tele" id="tele" aria-live="off"></div>
+  <div class="side">
+    <div class="chips">
+      <span class="chip phase" id="phaseChip">BRAKING</span>
+      <span class="chip met" id="metChip">T+00:00</span>
+    </div>
+    <div class="chips" id="alarms"></div>
+    <canvas id="minimap" width="264" height="264" aria-label="Map of the landing area with your track"></canvas>
+    <div class="ticker" id="ticker"></div>
+  </div>
+</div>
+
+<div class="hud hud-bottom" id="hudBottom" hidden>
+  <div class="pilot" id="pilot" hidden>
+    <div>
+      <div class="stick" id="stick"><div class="knob" id="knob"></div></div>
+      <div class="stick-label" id="stickLabel">Translate</div>
+    </div>
+    <div class="rate" id="rateBox">
+      <div class="readout" id="rateReadout">Sink 2.0 m/s</div>
+      <button class="btn" id="rateUp" type="button">Sink slower</button>
+      <button class="btn" id="rateDown" type="button">Sink faster</button>
+    </div>
+    <div class="throttle" id="throttleBox" hidden>
+      <div class="readout" id="thrReadout">50%</div>
+      <input type="range" id="throttle" min="0" max="100" value="50" aria-label="Throttle">
+      <button class="btn" id="engineSwap" type="button">Engines</button>
+    </div>
+  </div>
+  <div class="bar">
+    <div class="seg" role="group" aria-label="Flight mode">
+      <button type="button" id="mAUTO" aria-pressed="true">AUTO</button>
+      <button type="button" id="mASSIST" aria-pressed="false">ASSIST</button>
+      <button type="button" id="mDIRECT" aria-pressed="false">DIRECT</button>
+    </div>
+    <div class="seg" role="group" aria-label="Time warp">
+      <button type="button" id="w1" aria-pressed="true">1×</button>
+      <button type="button" id="w4" aria-pressed="false">4×</button>
+      <button type="button" id="w16" aria-pressed="false">16×</button>
+    </div>
+    <div class="seg" role="group" aria-label="View">
+      <button type="button" id="camBtn">CHASE</button>
+      <button type="button" id="pauseBtn">PAUSE</button>
+      <button type="button" id="menuBtn">MENU</button>
+    </div>
+  </div>
+</div>
+
+<section class="sheet" id="loading">
+  <div class="card">
+    <div class="eyebrow">Preparing</div>
+    <p id="loadMsg">Generating terrain</p>
+    <div class="progress"><div id="loadBar"></div></div>
+  </div>
+</section>
+
+<section class="sheet" id="setup" hidden>
+  <div class="card">
+    <div>
+      <div class="eyebrow">Lunar south pole · 89.5° S</div>
+      <h1>South Pole Lander</h1>
+      <p class="lede">Fly a powered descent to the connecting ridge beside Shackleton crater, where the Sun never rises more than 1.5° above the horizon. Engines, propellant, guidance and touchdown limits are modelled from published numbers where they exist.</p>
+    </div>
+
+    <div>
+      <h2>Lander</h2>
+      <div class="choices" id="vehicleChoices"></div>
+    </div>
+
+    <div>
+      <h2>Start point</h2>
+      <div class="choices" id="scenarioChoices"></div>
+    </div>
+
+    <div>
+      <h2>Sun and conditions</h2>
+      <div class="row">
+        <div class="field">
+          <label for="sunAz">Sun azimuth <span id="sunAzVal"></span>, elevation 1.0°</label>
+          <input type="range" id="sunAz" min="0" max="355" step="5" value="285">
+          <span class="status" id="sunStatus"></span>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="toggle"><input type="checkbox" id="enhanced"> Enhanced visibility (adds fill light)</label>
+        <label class="toggle"><input type="checkbox" id="failures"> Random engine failure</label>
+      </div>
+    </div>
+
+    <div>
+      <h2>Terrain</h2>
+      <p class="note" id="terrainNote"></p>
+      <div class="row" style="margin-top:8px">
+        <label class="btn" for="demFiles" style="display:inline-flex;align-items:center">Load LOLA heightmap files</label>
+        <input type="file" id="demFiles" multiple accept=".json,.bin" hidden>
+        <span class="status" id="demStatus"></span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn primary" id="startBtn" type="button">Begin descent</button>
+    </div>
+
+    <details>
+      <summary>Controls</summary>
+      <div class="keys" style="margin-top:8px">
+        <b>AUTO</b> flies the published-style guidance: braking, approach, terminal descent.<br>
+        <b>ASSIST</b> is like Apollo's P66: you steer a velocity target, the computer holds it. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> translate, <kbd>R</kbd>/<kbd>F</kbd> sink slower/faster.<br>
+        <b>DIRECT</b> is rate-command attitude-hold: <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> tilt, <kbd>Shift</kbd>/<kbd>Ctrl</kbd> throttle, <kbd>X</kbd> full, <kbd>Z</kbd> cut, <kbd>E</kbd> swap engines.<br>
+        <kbd>C</kbd> camera · <kbd>P</kbd> pause · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> time warp
+      </div>
+    </details>
+
+    <details>
+      <summary>What is modelled, and what is estimated</summary>
+      <ul>
+        <li>Point-mass flight in the Moon's central gravity field, with curvature, from a 15 × 100 km orbit. Attitude is rate-limited; throttles lag and cannot go below each engine's floor.</li>
+        <li>Starship HLS brakes on Raptors, then hands over to mid-body landing thrusters near the surface, because one Raptor at minimum throttle would still push a ~250 t lander upward at over 2 m/s². Thruster count and thrust are estimates.</li>
+        <li>Blue Moon MK2 flies three BE-7 hydrogen engines (44 kN, 460 s, 20–100% throttle, published). Its propellant load and geometry are estimates.</li>
+        <li>Guidance is an energy-optimal ZEM/ZEV law re-solved every step, flown through gates like Apollo's P63/P64/P66. If an engine failure leaves no landing solution, it aborts to orbit.</li>
+        <li>Sunlight is traced across the terrain for every vertex, including the Moon's curvature and the Sun's 0.53° disk. No atmosphere: black sky, no haze, dust flies on ballistic arcs.</li>
+        <li>Touchdown is judged on sink rate, drift, attitude, slope across the footpads, boulders under pads and tip-over margin from the centre-of-mass height.</li>
+      </ul>
+    </details>
+  </div>
+</section>
+
+<section class="sheet" id="result" hidden>
+  <div class="card">
+    <div class="eyebrow" id="resVehicle"></div>
+    <div class="outcome" id="resOutcome"></div>
+    <ul class="faults" id="resFaults"></ul>
+    <div class="stats" id="resStats"></div>
+    <div class="actions">
+      <button class="btn primary" id="againBtn" type="button">Fly again</button>
+      <button class="btn" id="setupBtn" type="button">Change setup</button>
+      <button class="btn" id="lookBtn" type="button">Look around</button>
+    </div>
+  </div>
+</section>
+
+<script>/*BUNDLE*/</script>
