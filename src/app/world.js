@@ -353,6 +353,29 @@ export class World {
     this.shadowStrip.visible = zb < 600;
   }
 
+  /** Landing point reticle on the ground: footprint ring, green safe / red unsafe. */
+  setReticle(x, y, radius, safe, visible) {
+    if (!this.reticle) {
+      const g = new THREE.RingGeometry(1, 1.12, 64);
+      const m = new THREE.MeshBasicMaterial({ color: 0x6fd39a, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+      this.reticle = new THREE.Mesh(g, m);
+      const cross = new THREE.Mesh(new THREE.RingGeometry(0, 0.08, 16), m);
+      this.reticle.add(cross);
+      this.scene.add(this.reticle);
+    }
+    const r = this.reticle;
+    r.visible = visible;
+    if (!visible) return;
+    const h = this.terrain.height(x, y);
+    const p = worldPoint(x, y, h + 0.25);
+    r.position.set(p[0], p[1], p[2]);
+    const up = new THREE.Vector3(p[0], p[1], p[2] + MOON.radius).normalize();
+    r.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), up);
+    r.scale.setScalar(radius);
+    r.material.color.set(safe ? 0x6fd39a : 0xff6a55);
+  }
+
   /** Keep the vehicle's shadow camera centred on the vehicle. */
   follow(vehiclePos, camera) {
     const d = this.sunDir;

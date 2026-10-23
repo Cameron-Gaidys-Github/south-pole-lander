@@ -8,7 +8,8 @@ import { World, mciToWorld } from './world.js';
 import { buildLander, updatePlumes } from './landers.js';
 import { Dust } from './dust.js';
 import { Minimap } from './minimap.js';
-import { Stick, keys } from './input.js';
+import { Stick, CrewInput, holdButton, keys } from './input.js';
+import { RockIndex, scanHazards, nearestSafe, scoreAt } from '../core/hazard.js';
 import { CameraRig, VIEW_LABEL } from './camera.js';
 import * as V from '../core/vec.js';
 
@@ -52,7 +53,7 @@ if (!SCENARIOS[cfg.scenario]) cfg.scenario = 'pdi';
 
 let terrain = null, world = null, sim = null, model = null, dust = null, minimap = null;
 let builtSunAz = null, builtTerrain = null;
-let warp = 1, paused = false, running = false;
+let warp = 1, paused = false, running = false, deployT = 0;
 
 // ---------------- setup sheet ----------------
 function vehicleCard(v) {
@@ -146,11 +147,13 @@ async function startFlight() {
   world.scene.add(model.root);
   dust.reset();
   setWarp(1); paused = false; $('pauseBtn').textContent = 'PAUSE';
-  setMode('AUTO');
+  syncModeUI();
+  hazardFor = null;
   $('hudTop').hidden = false; $('hudBottom').hidden = false;
   running = true;
   lastEventCount = 0;
   rig.resetAll();
+  deployT = 0;
 }
 
 function showSetup() {
@@ -168,88 +171,113 @@ $('menuBtn').addEventListener('click', showSetup);
 $('lookBtn').addEventListener('click', () => { $('result').hidden = true; rig.setMode('chase'); rig.target.chase.zoom = 2.5; $('camBtn').textContent = VIEW_LABEL.chase; });
 
 // ---------------- controls ----------------
-const stick = new Stick($('stick'), $('knob'));
+const crew = new CrewInput({
+  rhcStick: new Stick($('rhcStick'), $('rhcKnob')),
+  thcStick: new Stick($('thcStick'), $('thcKnob')),
+  yawL: holdButton($('yawL')), yawR: holdButton($('yawR')),
+  thcUp: holdButton($('thcUp')), thcDown: holdButton($('thcDown')),
+});
+// hazard scan around the current landing point (refreshed when it moves)
+let rockIndex = null, hazard = null, hazardFor = null;
+
+function refreshHazard(force) {
+  if (!sim) return;
+  if (!rockIndex || rockIndex.terrain !== sim.terrain) { rockIndex = new RockIndex(sim.terrain.rocks); rockIndex.terrain = sim.terrain; }
+  const key = `${sim.target.x.toFixed(1)},${sim.target.y.toFixed(1)}`;
+  if (!force && key === hazardFor) return;
+  hazard = scanHazards(sim.terrain, rockIndex, sim.v, sim.target.x, sim.target.y, 160, 6);
+  hazardFor = key;
+}
+
+function syncModeUI() {
+  if (!sim) return;
+  for (const k of ['AUTO', 'ROD', 'MANUAL']) $('m' + k).setAttribute('aria-pressed', String(sim.mode === k));
+  $('pilot').hidden = sim.mode === 'AUTO' || !!sim.result;
+  $('lpdBar').hidden = sim.mode !== 'AUTO' || !!sim.result;
+  $('rodBox').hidden = sim.mode !== 'ROD';
+  $('throttleBox').hidden = sim.mode !== 'MANUAL';
+  $('thcVert').hidden = sim.mode !== 'MANUAL';
+  $('engineSwap').hidden = !sim.v.engines.landing;
+  if (sim.mode === 'MANUAL') $('throttle').value = Math.round(sim.ctl.throttle * 100);
+}
 
 function setMode(m) {
   if (!sim) return;
   sim.setMode(m);
-  for (const k of ['AUTO', 'ASSIST', 'DIRECT']) $('m' + k).setAttribute('aria-pressed', String(sim.mode === k));
-  $('pilot').hidden = sim.mode === 'AUTO';
-  $('rateBox').hidden = sim.mode !== 'ASSIST';
-  $('throttleBox').hidden = sim.mode !== 'DIRECT';
-  $('stickLabel').textContent = sim.mode === 'ASSIST' ? 'Translate' : 'Attitude';
-  $('engineSwap').hidden = !sim.v.engines.landing;
-  if (sim.mode === 'DIRECT') {
-    const fr = localFrame(...sim.map);
-    // seed the attitude hold from the current axis
-    sim.manual.pitch = -Math.asin(Math.max(-1, Math.min(1, V.dot(sim.axis, fr.fwd)))) / DEG;
-    sim.manual.yaw = Math.asin(Math.max(-1, Math.min(1, V.dot(sim.axis, fr.left)))) / DEG;
-    $('throttle').value = Math.round(sim.manual.throttle * 100);
-  }
+  syncModeUI();
   if (m !== 'AUTO' && warp > 1) setWarp(1);
 }
-for (const k of ['AUTO', 'ASSIST', 'DIRECT']) $('m' + k).addEventListener('click', () => setMode(k));
+for (const k of ['AUTO', 'ROD', 'MANUAL']) $('m' + k).addEventListener('click', () => setMode(k));
 
 function setWarp(w) {
   warp = w;
   for (const x of [1, 4, 16]) $('w' + x).setAttribute('aria-pressed', String(x === w));
 }
-for (const x of [1, 4, 16]) $('w' + x).addEventListener('click', () => { if (x === 1 || (sim?.mode === 'AUTO' && sim.altitude > 1500)) setWarp(x); });
+const canWarp = () => sim?.mode === 'AUTO' && sim.altitude > 1500;
+for (const x of [1, 4, 16]) $('w' + x).addEventListener('click', () => { if (x === 1 || canWarp()) setWarp(x); });
 
 $('camBtn').addEventListener('click', () => { $('camBtn').textContent = VIEW_LABEL[rig.next()]; });
 $('pauseBtn').addEventListener('click', () => { paused = !paused; $('pauseBtn').textContent = paused ? 'RESUME' : 'PAUSE'; });
 
-function nudgeRate(d) {
-  if (!sim?.manual.vCmd) return;
-  const up = sim.up;
-  sim.manual.vCmd = V.addScaled(sim.manual.vCmd, up, d);
+function rod(dir) { if (!sim) return; const was = sim.mode; sim.rodClick(dir); if (was !== sim.mode) { syncModeUI(); setWarp(1); } }
+$('rodUp').addEventListener('click', () => rod(+1));
+$('rodDown').addEventListener('click', () => rod(-1));
+$('takeBtn').addEventListener('click', () => setMode('ROD'));
+$('throttle').addEventListener('input', () => { if (sim) sim.ctl.throttle = $('throttle').value / 100; });
+$('engineSwap').addEventListener('click', swapEngine);
+function swapEngine() {
+  if (!sim || !sim.v.engines.landing) return;
+  sim.ctl.engine = (sim.ctl.engine || sim.engine) === 'main' ? 'landing' : 'main';
 }
-$('rateUp').addEventListener('click', () => nudgeRate(+0.5));
-$('rateDown').addEventListener('click', () => nudgeRate(-0.5));
-$('throttle').addEventListener('input', () => { if (sim) sim.manual.throttle = $('throttle').value / 100; });
-$('engineSwap').addEventListener('click', () => {
-  if (!sim) return;
-  sim.manual.engine = (sim.manual.engine || sim.engine) === 'main' ? 'landing' : 'main';
-});
 
-window.addEventListener('keydown', (e) => {
-  if (!running || !sim) return;
-  if (e.key === 'c' || e.key === 'C') $('camBtn').click();
-  if (e.key === 'v' || e.key === 'V') rig.reset();
-  if (e.key === 'p' || e.key === 'P') $('pauseBtn').click();
-  if (e.key === '1') $('w1').click();
-  if (e.key === '2') $('w4').click();
-  if (e.key === '3') $('w16').click();
-  if (e.key === 'r' || e.key === 'R') nudgeRate(+0.5);
-  if (e.key === 'f' || e.key === 'F') nudgeRate(-0.5);
-  if (e.key === 'e' || e.key === 'E') $('engineSwap').click();
-  if (e.key === 'x' || e.key === 'X') { sim.manual.throttle = 1; $('throttle').value = 100; }
-  if (e.key === 'z' || e.key === 'Z') { sim.manual.throttle = 0; $('throttle').value = 0; }
+function lpdNudge(dx, dy) {
+  if (!sim || sim.mode !== 'AUTO') return;
+  // dx is along track (downrange), dy across (left)
+  sim.redesignate(sim.target.x + dx, sim.target.y + dy);
+  refreshHazard();
+}
+function goSafeSite() {
+  if (!sim || sim.mode !== 'AUTO') return;
+  refreshHazard(true);
+  const best = nearestSafe(hazard, sim.target.x, sim.target.y);
+  if (best && best.d > 1) { sim.redesignate(best.x, best.y); refreshHazard(); }
+}
+$('safeBtn').addEventListener('click', goSafeSite);
+
+// tap the map to redesignate
+$('minimap').addEventListener('pointerdown', (e) => {
+  if (!sim || sim.mode !== 'AUTO' || !minimap.lpdView) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const [mx, my] = minimap.toMap((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+  sim.redesignate(mx, my);
+  refreshHazard();
 });
 
 function applyPilotInput(dt) {
-  if (!sim || sim.mode === 'AUTO') return;
-  let sx = stick.x, sy = stick.y;
-  if (sim.mode === 'ASSIST') {
-    sx += (keys.has('d') ? 1 : 0) - (keys.has('a') ? 1 : 0);
-    sy += (keys.has('w') ? 1 : 0) - (keys.has('s') ? 1 : 0);
-    const fr = localFrame(...sim.map);
-    // full deflection changes the velocity target by 3 m/s each second
-    sim.manual.vCmd = V.add(sim.manual.vCmd, V.add(V.scale(fr.fwd, sy * 3 * dt), V.scale(fr.left, -sx * 3 * dt)));
-    const vz = V.dot(sim.manual.vCmd, sim.up);
-    $('rateReadout').textContent = `${vz <= 0 ? 'Sink' : 'Climb'} ${Math.abs(vz).toFixed(1)} m/s`;
-  } else {
-    sx += (keys.has('arrowright') ? 1 : 0) - (keys.has('arrowleft') ? 1 : 0);
-    sy += (keys.has('arrowdown') ? 1 : 0) - (keys.has('arrowup') ? 1 : 0);
-    // rate command, attitude hold: up to 10 deg/s
-    sim.manual.pitch = Math.max(-100, Math.min(100, sim.manual.pitch - sy * 10 * dt));
-    sim.manual.yaw = Math.max(-60, Math.min(60, sim.manual.yaw - sx * 10 * dt));
-    if (keys.has('shift')) sim.manual.throttle = Math.min(1, sim.manual.throttle + 0.5 * dt);
-    if (keys.has('control')) sim.manual.throttle = Math.max(0, sim.manual.throttle - 0.5 * dt);
-    $('throttle').value = Math.round(sim.manual.throttle * 100);
-    $('thrReadout').textContent = `${Math.round(sim.manual.throttle * 100)}%`;
-    $('engineSwap').textContent = sim.v.engines[sim.manual.engine || sim.engine].label.replace('Landing thrusters', 'Thrusters');
+  if (!sim) return;
+  const inp = crew.poll(sim.mode);
+  for (const ev of inp.events) {
+    if (ev.type === 'rod') rod(ev.dir);
+    else if (ev.type === 'lpd') lpdNudge(ev.dx, ev.dy);
+    else if (ev.type === 'mode') setMode(ev.mode);
+    else if (ev.type === 'engine') swapEngine();
+    else if (ev.type === 'safeSite') goSafeSite();
+    else if (ev.type === 'camera') $('camBtn').click();
+    else if (ev.type === 'cameraReset') rig.reset();
+    else if (ev.type === 'pause') $('pauseBtn').click();
+    else if (ev.type === 'throttleSet') { sim.ctl.throttle = ev.value; }
+    else if (ev.type === 'warp') { const w = [1, 4, 16]; const i = Math.max(0, Math.min(2, w.indexOf(warp) + ev.dir)); if (w[i] === 1 || canWarp()) setWarp(w[i]); }
   }
+  sim.ctl.rhc = sim.mode === 'AUTO' ? [0, 0, 0] : inp.rhc;
+  sim.ctl.thc = sim.mode === 'AUTO' ? [0, 0, 0] : inp.thc;
+  if (sim.mode === 'MANUAL') {
+    if (inp.throttleAbs != null) sim.ctl.throttle = inp.throttleAbs;
+    sim.ctl.throttle = Math.max(0, Math.min(1, sim.ctl.throttle + inp.throttleRate * 0.5 * dt));
+    $('throttle').value = Math.round(sim.ctl.throttle * 100);
+    $('thrReadout').textContent = `${Math.round(sim.ctl.throttle * 100)}%`;
+    $('engineSwap').textContent = sim.v.engines[sim.ctl.engine || sim.engine].label.replace('Landing thrusters', 'Thrusters');
+  }
+  if (sim.mode === 'ROD') $('rodReadout').textContent = `${sim.rodCmd >= 0 ? '+' : '−'}${Math.abs(sim.rodCmd).toFixed(1)}`;
 }
 
 // ---------------- HUD ----------------
@@ -290,6 +318,22 @@ function updateHUD() {
   if (s.coasting) alarms.push('COAST');
   if (alt < 30 && Number.isFinite(slope) && slope > L.slopeDeg) alarms.push('SLOPE');
   if (alt < 40 && s.terrain.rockHeightAt(...s.map, s.v.legRadius) > L.rockHeight) alarms.push('BOULDER');
+  if (s.rcsFiring) alarms.push('RCS');
+  // Landing point designation, available in AUTO below 4 km
+  const lpd = s.mode === 'AUTO' && !s.result && !s.aborting && (s.heightAboveTarget - s.targetHeight) < 4000;
+  $('lpdBar').hidden = !lpd && !(s.mode === 'AUTO' && !s.result);
+  $('safeBtn').hidden = !lpd;
+  if (lpd) {
+    refreshHazard();
+    const sc = scoreAt(hazard, s.target.x, s.target.y);
+    const moved = Math.hypot(s.target.x, s.target.y);
+    $('lpdText').innerHTML = (sc != null && sc < 0.75 ? '<b style="color:var(--go)">Landing point safe</b>' : '<b style="color:var(--warn)">Landing point unsafe</b>')
+      + (moved > 1 ? ` · moved ${fmt(moved)} m` : '') + ' · tap map to move';
+  } else if (s.mode === 'AUTO' && !s.result) {
+    $('lpdText').textContent = 'Landing point designation opens below 4 km';
+  }
+  minimap.draw(s, hazard, lpd);
+  world.setReticle(s.target.x, s.target.y, s.v.legRadius, lpd ? (scoreAt(hazard, s.target.x, s.target.y) ?? 1) < 0.75 : true, lpd || s.altitude < 3000);
   $('alarms').innerHTML = alarms.map(a => `<span class="chip alarm">${a}</span>`).join('');
   if (s.events.length !== lastEventCount) {
     lastEventCount = s.events.length;
@@ -375,8 +419,8 @@ function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clock.getDelta(), 0.1);
   if (!sim || !world) { return; }
+  if (running && !sim.result) applyPilotInput(dt);
   if (running && !paused && !sim.result) {
-    applyPilotInput(dt);
     acc += dt * warp;
     let n = 0;
     while (acc >= DT && n < 2000 && !sim.result) { sim.step(DT); acc -= DT; n++; }
@@ -384,8 +428,12 @@ function frame() {
   }
   updateCamera(dt);
   updatePlumes(model, sim, performance.now() / 1000);
+  if (sim.result && sim.result.outcome === 'LANDED') {
+    deployT = Math.min(1, deployT + dt / 25);
+    model.setDeploy(deployT, world.sunAz * DEG);
+  }
   dust.update(sim, dt * (paused ? 0 : warp > 1 ? 1 : 1), model);
-  if ((hudTimer += dt) > 0.1 && running) { hudTimer = 0; updateHUD(); minimap.draw(sim); }
+  if ((hudTimer += dt) > 0.1 && running) { hudTimer = 0; updateHUD(); }
   renderer.render(world.scene, camera);
 }
 

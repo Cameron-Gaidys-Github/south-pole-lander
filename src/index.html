@@ -83,7 +83,10 @@ button:focus-visible, input:focus-visible, label:focus-within { outline: 2px sol
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button[aria-pressed="true"] { background: var(--amber-dim); color: var(--amber); }
 .seg button:disabled { opacity: 0.35; cursor: default; }
-.pilot { display: flex; gap: 12px; align-items: flex-end; justify-content: space-between; }
+.pilot { display: flex; gap: 10px; align-items: flex-end; justify-content: space-between;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+#throttle { writing-mode: vertical-lr; direction: rtl; height: 104px; width: 36px; align-self: center; accent-color: var(--amber); }
 .stick {
   width: 128px; height: 128px; border-radius: 50%; position: relative; touch-action: none;
   background: radial-gradient(circle, rgba(242,169,59,0.08), rgba(16,17,20,0.78) 70%); border: 1px solid var(--line);
@@ -92,6 +95,16 @@ button:focus-visible, input:focus-visible, label:focus-within { outline: 2px sol
 .stick::before { left: 50%; top: 10%; bottom: 10%; width: 1px; }
 .stick::after { top: 50%; left: 10%; right: 10%; height: 1px; }
 .knob { position: absolute; width: 44px; height: 44px; left: 42px; top: 42px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 4px rgba(242,169,59,0.2); z-index: 1; }
+.ctl { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.centre { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 92px; }
+.pair { display: flex; gap: 6px; }
+.btn.mini { min-height: 34px; padding: 4px 8px; font-size: 11px; }
+.readout.big { font-size: 20px; font-weight: 500; }
+.stick.small { width: 104px; height: 104px; }
+.stick.small .knob { left: 30px; top: 30px; }
+.lpd-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.lpd-text { flex: 1 1 160px; font-size: 13px; color: var(--muted); }
+#minimap.lpd { width: 176px; height: 176px; cursor: crosshair; border-color: rgba(242,169,59,0.6); }
 .stick-label { font-family: var(--f-display); font-size: 10px; letter-spacing: 0.1em; color: var(--muted); text-align: center; margin-top: 4px; text-transform: uppercase; }
 .rate { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .btn {
@@ -181,27 +194,41 @@ kbd { font-family: var(--f-data); border: 1px solid var(--line); border-radius: 
 </div>
 
 <div class="hud hud-bottom" id="hudBottom" hidden>
+  <!-- AUTO: landing point redesignation -->
+  <div class="lpd-bar" id="lpdBar" hidden>
+    <span class="lpd-text" id="lpdText">Tap the map to move the landing point</span>
+    <button class="btn" id="safeBtn" type="button">Safe site</button>
+    <button class="btn" id="takeBtn" type="button">Take over</button>
+  </div>
+  <!-- Crew modes: hand controllers -->
   <div class="pilot" id="pilot" hidden>
-    <div>
-      <div class="stick" id="stick"><div class="knob" id="knob"></div></div>
-      <div class="stick-label" id="stickLabel">Translate</div>
+    <div class="ctl">
+      <div class="stick small" id="thcStick" aria-label="Translation controller"><div class="knob" id="thcKnob"></div></div>
+      <div class="stick-label">THC · translate</div>
+      <div class="pair" id="thcVert"><button class="btn mini" id="thcUp" type="button">Up</button><button class="btn mini" id="thcDown" type="button">Down</button></div>
     </div>
-    <div class="rate" id="rateBox">
-      <div class="readout" id="rateReadout">Sink 2.0 m/s</div>
-      <button class="btn" id="rateUp" type="button">Sink slower</button>
-      <button class="btn" id="rateDown" type="button">Sink faster</button>
+    <div class="centre" id="rodBox">
+      <div class="readout big" id="rodReadout">−1.0</div>
+      <div class="stick-label">ROD m/s</div>
+      <button class="btn" id="rodUp" type="button" aria-label="Sink slower">▲ slower</button>
+      <button class="btn" id="rodDown" type="button" aria-label="Sink faster">▼ faster</button>
     </div>
-    <div class="throttle" id="throttleBox" hidden>
-      <div class="readout" id="thrReadout">50%</div>
+    <div class="centre" id="throttleBox" hidden>
+      <div class="readout big" id="thrReadout">50%</div>
       <input type="range" id="throttle" min="0" max="100" value="50" aria-label="Throttle">
-      <button class="btn" id="engineSwap" type="button">Engines</button>
+      <button class="btn mini" id="engineSwap" type="button">Engines</button>
+    </div>
+    <div class="ctl">
+      <div class="stick" id="rhcStick" aria-label="Rotation controller"><div class="knob" id="rhcKnob"></div></div>
+      <div class="stick-label">RHC · attitude</div>
+      <div class="pair"><button class="btn mini" id="yawL" type="button" aria-label="Yaw left">⟲ yaw</button><button class="btn mini" id="yawR" type="button" aria-label="Yaw right">yaw ⟳</button></div>
     </div>
   </div>
   <div class="bar">
     <div class="seg" role="group" aria-label="Flight mode">
       <button type="button" id="mAUTO" aria-pressed="true">AUTO</button>
-      <button type="button" id="mASSIST" aria-pressed="false">ASSIST</button>
-      <button type="button" id="mDIRECT" aria-pressed="false">DIRECT</button>
+      <button type="button" id="mROD" aria-pressed="false">ROD</button>
+      <button type="button" id="mMANUAL" aria-pressed="false">MANUAL</button>
     </div>
     <div class="seg" role="group" aria-label="Time warp">
       <button type="button" id="w1" aria-pressed="true">1×</button>
@@ -274,11 +301,13 @@ kbd { font-family: var(--f-data); border: 1px solid var(--line); border-radius: 
     <details>
       <summary>Controls</summary>
       <div class="keys" style="margin-top:8px">
-        <b>AUTO</b> flies the published-style guidance: braking, approach, terminal descent.<br>
-        <b>ASSIST</b> is like Apollo's P66: you steer a velocity target, the computer holds it. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> translate, <kbd>R</kbd>/<kbd>F</kbd> sink slower/faster.<br>
-        <b>DIRECT</b> is rate-command attitude-hold: <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> tilt, <kbd>Shift</kbd>/<kbd>Ctrl</kbd> throttle, <kbd>X</kbd> full, <kbd>Z</kbd> cut, <kbd>E</kbd> swap engines.<br>
-        <b>Camera:</b> drag the scene to orbit or look around, pinch or scroll to zoom, double-tap to reset. <kbd>C</kbd> next view (chase, cabin, ground tracker, top-down) · <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> orbit · <kbd>U</kbd>/<kbd>O</kbd> zoom · <kbd>V</kbd> reset<br>
-        <kbd>P</kbd> pause · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> time warp
+        <b>AUTO</b>: guidance flies. Redesignate the landing point by tapping the map (it zooms in below 4 km), with the arrow keys, or flicking the left stick. <b>Safe site</b> jumps to the nearest spot the hazard scan rates safe.<br>
+        <b>ROD</b>, like Apollo's P66: you fly attitude with the rotational hand controller (RHC); the computer throttles to hold the rate of descent you set with the ROD switch, 0.3 m/s per click. Pressing the ROD switch in AUTO hands over.<br>
+        <b>MANUAL</b>: RHC attitude, throttle lever, and the translational hand controller (THC) firing RCS.<br>
+        <b>Keyboard</b>: <kbd>W</kbd><kbd>S</kbd> pitch, <kbd>A</kbd><kbd>D</kbd> roll, <kbd>Q</kbd><kbd>E</kbd> yaw · arrows THC (or LPD in AUTO) · <kbd>R</kbd>/<kbd>F</kbd> ROD slower/faster (THC up/down in MANUAL) · <kbd>Shift</kbd>/<kbd>Ctrl</kbd> throttle, <kbd>X</kbd> full, <kbd>Z</kbd> cut · <kbd>T</kbd> engines · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> AUTO/ROD/MANUAL · <kbd>H</kbd> safe site<br>
+        <b>Gamepad</b>: right stick RHC, bumpers yaw, left stick THC (LPD in AUTO), triggers throttle, d-pad ROD, A ROD · B AUTO · X MANUAL · Y camera. Flight sticks: stick RHC, twist yaw, slider throttle.<br>
+        <b>Camera</b>: drag the scene to orbit or look around, pinch or scroll to zoom, double-tap to reset. <kbd>C</kbd> next view · <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> orbit · <kbd>U</kbd>/<kbd>O</kbd> zoom · <kbd>V</kbd> reset<br>
+        <kbd>P</kbd> pause · <kbd>[</kbd>/<kbd>]</kbd> time warp
       </div>
     </details>
 

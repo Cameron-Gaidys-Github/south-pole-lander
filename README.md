@@ -21,8 +21,13 @@ touchdown judged the way a lander engineer would judge it.
   exists with the remaining thrust (Blue Moon losing a BE-7 early), it aborts to orbit.
 - **Four camera views** (chase, cabin, ground tracker, top-down): drag to orbit or look around, pinch or scroll
   to zoom, double-tap to reset.
-- **Three ways to fly:** AUTO; ASSIST, where you steer a velocity target like Apollo's P66; DIRECT,
-  rate-command attitude-hold with a throttle.
+- **Real crew interaction:** AUTO with landing point redesignation on a live hazard map; ROD, Apollo's P66, where
+  you fly attitude with a rotational hand controller and set the descent rate 0.3 m/s per click; MANUAL with
+  RHC, throttle lever and a translational hand controller on RCS. Full attitude dynamics, rate-command
+  attitude-hold.
+- **Any input:** on-screen hand controllers for touch, keyboard, game controllers and flight sticks.
+- **Published lander configurations:** HLS with its cabin windows, thruster pods, elevator, deployable solar
+  arrays and four legs; Blue Moon MK2 with its top-mounted cabin and three BE-7s.
 - **Light at the pole:** every terrain vertex marches toward the Sun up to 60 km, including the Moon's curvature
   drop and the 0.53° solar disk. Surfaces use a per-pixel Lommel–Seeliger regolith shader with sub-metre relief that fades with distance. The vehicle's own shadow (kilometres
   long at a 1° Sun) is traced along the ground.

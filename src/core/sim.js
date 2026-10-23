@@ -51,10 +51,16 @@ export class Simulation {
     this.rng = mulberry(seed);
     this.t = 0;
     this.events = [];
-    this.mode = 'AUTO';           // AUTO | ASSIST | DIRECT
+    this.mode = 'AUTO';           // AUTO | ROD | MANUAL
     this.result = null;           // set on touchdown
     this.enginesOut = {};         // engineKey -> count
-    this.manual = { throttle: 0.5, pitch: 0, yaw: 0, vCmd: null, engine: null };
+    // Crew inputs, written by the UI every frame:
+    //   rhc  rotational hand controller [roll, pitch, yaw], each -1..1
+    //   thc  translational hand controller [fwd, left, up], each -1..1 (RCS)
+    //   throttle 0..1 and engine selection for MANUAL
+    this.ctl = { rhc: [0, 0, 0], thc: [0, 0, 0], throttle: 0, engine: null };
+    this.rodCmd = -1;             // commanded vertical rate in ROD mode, m/s
+    this.w = [0, 0, 0];           // body angular rate, rad/s
     this.track = [];
     this.target = { x: 0, y: 0 };
     this.init();
@@ -78,7 +84,11 @@ export class Simulation {
     this.vel = V.scale(fr.fwd, vh);
     this.prop = veh.propellant;
     this.mass = mass0;
-    this.axis = V.scale(fr.fwd, -1); // retrograde
+    // Thrust axis (body Z) retrograde; crew windows (body X) toward the ground
+    {
+      const z = V.scale(fr.fwd, -1), x = V.scale(fr.up, -1);
+      this.q = V.qFromBasis(x, V.cross(z, x), z);
+    }
     this.engine = veh.gates[0].engine;
     this.throttle = 0;           // actual, fraction of the active group's max
     this.thrustCmd = 0;          // N
@@ -112,6 +122,10 @@ export class Simulation {
   get vHorizVec() { const u = this.up; return V.sub(this.vel, V.scale(u, V.dot(this.vel, u))); }
   get vHoriz() { return V.len(this.vHorizVec); }
   get rangeToTarget() { const [x, y] = this.map; return Math.hypot(x - this.target.x, y - this.target.y); }
+  get axis() { return V.qrot(this.q, [0, 0, 1]); }
+  get bodyX() { return V.qrot(this.q, [1, 0, 0]); }
+  get bodyY() { return V.qrot(this.q, [0, 1, 0]); }
+  get targetHeight() { return this.terrain.height(this.target.x, this.target.y); }
   get tiltDeg() { return V.angleBetween(this.axis, this.up) / DEG; }
   get thrust() { return this.throttle * maxThrust(this.v, this.engine, this.enginesOut[this.engine] || 0); }
   get twr() { return maxThrust(this.v, this.engine, this.enginesOut[this.engine] || 0) / (this.mass * V.len(gravityAt(this.r))); }
@@ -132,8 +146,9 @@ export class Simulation {
   // ---------- guidance ----------
   gateState(i) {
     const g = this.v.gates[i].to;
-    const fr = localFrame(g.pos[0], 0);
-    const r = mapToMCI(g.pos[0], 0, g.pos[1]);
+    const gx = this.target.x + g.pos[0], gy = this.target.y;
+    const fr = localFrame(gx, gy);
+    const r = mapToMCI(gx, gy, this.targetHeight + g.pos[1]);
     const v = V.add(V.scale(fr.fwd, g.vel[0]), V.scale(fr.up, g.vel[1]));
     return { r, v };
   }
@@ -248,31 +263,102 @@ export class Simulation {
     return V.add(V.add(aH, V.scale(up, aZ)), V.scale(g, -1));
   }
 
-  /** Assisted manual (like Apollo P66): pilot steers a velocity target, computer flies it. */
-  assistAccel() {
-    const g = gravityAt(this.r);
-    if (!this.manual.vCmd) this.manual.vCmd = [...this.vel];
-    const err = V.sub(this.manual.vCmd, this.vel);
-    return V.add(V.scale(err, 0.5), V.scale(g, -1));
-  }
-
+  /**
+   * Crew modes.
+   *   AUTO    guidance flies; the crew can redesignate the landing point.
+   *   ROD     like Apollo's P66: the crew flies attitude with the RHC, the
+   *           computer throttles to hold a descent rate set by the ROD switch.
+   *   MANUAL  RHC attitude, throttle lever, THC translation on RCS.
+   */
   setMode(m) {
     if (m === this.mode || this.result) return;
+    const prev = this.mode;
     this.mode = m;
-    if (m === 'ASSIST') this.manual.vCmd = [...this.vel];
-    if (m === 'DIRECT') {
-      this.manual.throttle = this.throttle;
-      this.manual.engine = this.engine;
+    this.qHold = this.q;
+    if (m === 'ROD') {
+      this.rodCmd = Math.max(-6, Math.min(1, Math.round(this.vVert / 0.3) * 0.3));
+      this.coasting = false;
+    }
+    if (m === 'MANUAL') {
+      this.ctl.throttle = this.throttle;
+      this.ctl.engine = this.engine;
+      this.coasting = false;
     }
     if (m === 'AUTO') {
       // Re-plan from where we are: pick the earliest gate still ahead
       let i = this.phase;
-      const alt = this.heightAboveTarget;
+      const alt = this.heightAboveTarget - this.targetHeight;
       if (alt < 200 && this.rangeToTarget < 400) i = this.v.gates.length - 1;
       else if (alt < 3000) i = Math.max(i, 1);
       this.startPhase(i);
     }
-    this.log(`Mode: ${m}`);
+    this.log(`Mode: ${prev} → ${m}`);
+  }
+
+  /** ROD switch: one click = 0.3 m/s (1 ft/s, as on Apollo). In AUTO it hands over to ROD. */
+  rodClick(dir) {
+    if (this.result) return;
+    if (this.mode === 'AUTO') { this.setMode('ROD'); return; }
+    if (this.mode !== 'ROD') return;
+    this.rodCmd = Math.max(-8, Math.min(2, this.rodCmd + 0.3 * dir));
+  }
+
+  /**
+   * Landing point redesignation (AUTO only). Moves the target; guidance
+   * re-plans to it. The further down you are, the smaller the move allowed.
+   * Returns the distance actually moved.
+   */
+  redesignate(x, y) {
+    if (this.mode !== 'AUTO' || this.aborting || this.result) return 0;
+    const h = this.heightAboveTarget - this.targetHeight;
+    if (h > 4000) return 0;
+    const maxShift = Math.max(10, Math.min(800, 0.45 * Math.max(0, this.altitude)));
+    let dx = x - this.target.x, dy = y - this.target.y;
+    const d = Math.hypot(dx, dy);
+    if (d > maxShift) { dx *= maxShift / d; dy *= maxShift / d; }
+    this.target = { x: this.target.x + dx, y: this.target.y + dy };
+    if (this.phaseName !== 'TERMINAL') this.tgoEnd = this.t + this.planTgo(this.phase);
+    this.redesignations = (this.redesignations || 0) + 1;
+    this.log(`LPD: landing point moved ${Math.hypot(dx, dy).toFixed(0)} m`);
+    return Math.hypot(dx, dy);
+  }
+
+  /** Body rate command that drives attitude q toward qRef within rate and acceleration limits. */
+  rateToward(qRef) {
+    const e = V.qErrorBody(this.q, qRef);
+    const wMax = this.v.slewRateDeg * DEG, aMax = this.v.angAccelDeg * DEG;
+    return e.map(x => Math.sign(x) * Math.min(wMax, Math.sqrt(1.7 * aMax * Math.abs(x)), 1.6 * Math.abs(x)));
+  }
+
+  /**
+   * Rate command for the autopilot: swing the thrust axis onto `axisCmd` first
+   * (that is what steers the vehicle), and only trim roll once the axis is
+   * close, so a large roll correction never fights the pointing.
+   */
+  rateTowardAxis(axisCmd) {
+    const axis = this.axis;
+    const swingAng = V.angleBetween(axis, axisCmd);
+    let e = [0, 0, 0];
+    if (swingAng > 1e-6) {
+      const sw = V.scale(V.norm(V.cross(axis, axisCmd)), swingAng);
+      e = V.qrotInv(this.q, sw);
+    }
+    // roll: windows (body X) toward downrange and down
+    const fr = localFrame(...this.map);
+    let xr = V.sub(fr.fwd, fr.up);
+    xr = V.sub(xr, V.scale(axis, V.dot(xr, axis)));
+    if (V.len(xr) > 1e-3) {
+      xr = V.norm(xr);
+      const x = this.bodyX;
+      const twist = Math.atan2(V.dot(V.cross(x, xr), axis), V.dot(x, xr));
+      const k = swingAng < 12 * DEG ? 0.6 : 0;
+      e[2] += twist * k;
+    }
+    const wMax = this.v.slewRateDeg * DEG, aMax = this.v.angAccelDeg * DEG;
+    return e.map((x, i) => {
+      const lim = i === 2 ? wMax * 0.5 : wMax; // roll gently
+      return Math.sign(x) * Math.min(lim, Math.sqrt(1.7 * aMax * Math.abs(x)), 1.6 * Math.abs(x));
+    });
   }
 
   // ---------- integration ----------
@@ -295,26 +381,22 @@ export class Simulation {
       }
     }
 
-    // Desired control acceleration -> thrust axis + thrust magnitude
-    let aCmd, thrustCmd, axisCmd;
-    if (this.mode === 'DIRECT') {
-      if (this.manual.engine && this.manual.engine !== this.engine && veh.engines[this.manual.engine]) {
-        this.engine = this.manual.engine; this.throttle = 0;
-        this.log(`${veh.engines[this.engine].label} selected`);
-      }
-      const fr = localFrame(...this.map);
-      const p = this.manual.pitch * DEG, yw = this.manual.yaw * DEG;
-      // pitch tilts the axis toward -fwd (retrograde) when positive; yaw toward +left
-      axisCmd = V.norm(V.add(V.add(V.scale(fr.up, Math.cos(p) * Math.cos(yw)), V.scale(fr.fwd, -Math.sin(p))), V.scale(fr.left, Math.sin(yw))));
-      thrustCmd = this.manual.throttle * maxThrust(veh, this.engine, this.enginesOut[this.engine] || 0);
-    } else {
-      aCmd = this.mode === 'AUTO' ? this.autopilotAccel() : this.assistAccel();
+    // ---- what the vehicle is asked to do ----
+    let thrustCmd = 0, wCmd;
+    const up = this.up;
+    const gmag = V.len(gravityAt(this.r));
+    const rhc = this.ctl.rhc;
+    const rhcActive = Math.hypot(rhc[0], rhc[1], rhc[2]) > 0.04;
+    const wMax = veh.slewRateDeg * DEG;
+
+    if (this.mode === 'AUTO') {
+      const aCmd = this.autopilotAccel();
       const { aMax } = this.accelLimits(this.engine);
       const aMag = Math.min(V.len(aCmd), aMax);
-      axisCmd = V.len(aCmd) > 1e-6 ? V.norm(aCmd) : this.up;
+      let axisCmd = V.len(aCmd) > 1e-6 ? V.norm(aCmd) : up;
       // never point the engines more than 100 deg away from straight down
-      const tilt = V.angleBetween(axisCmd, this.up);
-      if (tilt > 100 * DEG) axisCmd = V.slerpLimited(this.up, axisCmd, 100 * DEG);
+      if (V.angleBetween(axisCmd, up) > 100 * DEG) axisCmd = V.slerpLimited(up, axisCmd, 100 * DEG);
+      this.axisCmd = axisCmd;
       thrustCmd = aMag * this.mass;
       // Engines can't throttle below their floor: coast (engines off) instead
       const floorN = veh.engines[this.engine].thrustEach * veh.engines[this.engine].minThrottle;
@@ -323,13 +405,43 @@ export class Simulation {
         else if (this.coasting && thrustCmd > 0.95 * floorN) { this.coasting = false; this.log(`${veh.engines[this.engine].label} relight`); }
       } else this.coasting = false;
       if (this.coasting) thrustCmd = 0;
+      wCmd = this.rateTowardAxis(axisCmd);
+      // throttle back while the vehicle is still turning onto the commanded axis
+      const err = V.angleBetween(this.axis, axisCmd);
+      if (err > 20 * DEG) thrustCmd *= Math.max(0.25, Math.cos(err));
+    } else {
+      // Rate command, attitude hold: stick out of detent commands body rates,
+      // centred stick holds the attitude it was released at.
+      if (rhcActive) {
+        wCmd = [rhc[0] * wMax, rhc[1] * wMax, -rhc[2] * wMax];
+        this.qHold = null;
+      } else {
+        if (!this.qHold) this.qHold = this.q;
+        wCmd = this.rateToward(this.qHold);
+      }
+      this.axisCmd = null;
+      if (this.mode === 'ROD') {
+        // HLS: Raptors can't throttle low enough to hover, so ROD runs on the landing thrusters
+        if (veh.engines.landing && this.engine === 'main') {
+          this.engine = 'landing'; this.throttle = 0;
+          this.log(`${veh.engines.landing.label} selected for ROD`);
+        }
+        const cosT = Math.max(0.35, V.dot(this.axis, up));
+        const aZ = gmag + 1.1 * (this.rodCmd - this.vVert);
+        thrustCmd = Math.max(0, this.mass * aZ / cosT);
+      } else {
+        if (this.ctl.engine && this.ctl.engine !== this.engine && veh.engines[this.ctl.engine]) {
+          this.engine = this.ctl.engine; this.throttle = 0;
+          this.log(`${veh.engines[this.engine].label} selected`);
+        }
+        thrustCmd = this.ctl.throttle * maxThrust(veh, this.engine, this.enginesOut[this.engine] || 0);
+      }
     }
-    this.axisCmd = axisCmd;
 
-    // Attitude: slew-rate limited
-    this.axis = V.slerpLimited(this.axis, axisCmd, veh.slewRateDeg * DEG * dt);
-    const pointErr = V.angleBetween(this.axis, axisCmd);
-    if (pointErr > 45 * DEG && this.mode !== 'DIRECT') thrustCmd *= 0.3; // wait for the turn
+    // ---- rotational dynamics: rates follow the command within RCS authority ----
+    const alpha = veh.angAccelDeg * DEG * dt;
+    for (let i = 0; i < 3; i++) this.w[i] += Math.max(-alpha, Math.min(alpha, wCmd[i] - this.w[i]));
+    this.q = V.qIntegrate(this.q, this.w, dt);
 
     // Throttle allocation: whole engines, each between its floor and 100%
     const e = veh.engines[this.engine];
@@ -339,14 +451,24 @@ export class Simulation {
     if (this.prop > 0 && avail > 0 && thrustCmd > 0) {
       const floor = e.thrustEach * e.minThrottle;
       target = Math.min(Math.max(thrustCmd, floor), tMax) / tMax;
-      if (this.mode === 'DIRECT' && this.manual.throttle <= 0.001) target = 0;
+      if (this.mode === 'MANUAL' && this.ctl.throttle <= 0.001) target = 0;
     }
     this.throttle += (target - this.throttle) * Math.min(1, dt / e.lag);
     this.thrustCmd = thrustCmd;
 
     // Translational dynamics (semi-implicit, small dt)
     const T = this.prop > 0 ? this.throttle * tMax : 0;
-    const accel = V.add(gravityAt(this.r), V.scale(this.axis, T / this.mass));
+    let accel = V.add(gravityAt(this.r), V.scale(this.axis, T / this.mass));
+    // THC: translation on the RCS thrusters (crew modes only)
+    const thc = this.ctl.thc;
+    if (this.mode !== 'AUTO' && this.prop > 0 && Math.hypot(thc[0], thc[1], thc[2]) > 0.04) {
+      const aR = veh.rcsAccel;
+      const aRcs = V.add(V.add(V.scale(this.bodyX, thc[0] * aR), V.scale(this.bodyY, thc[1] * aR)), V.scale(this.axis, thc[2] * aR));
+      accel = V.add(accel, aRcs);
+      const rcsBurn = this.mass * V.len(aRcs) / (290 * G0) * dt;
+      this.prop -= rcsBurn; this.mass -= rcsBurn;
+      this.rcsFiring = true;
+    } else this.rcsFiring = false;
     this.accel = accel;
     this.vel = V.addScaled(this.vel, accel, dt);
     this.r = V.addScaled(this.r, this.vel, dt);
@@ -374,7 +496,7 @@ export class Simulation {
     // Footpad heights and rocks
     const pads = [];
     for (let k = 0; k < veh.legCount; k++) {
-      const a = (k / veh.legCount) * Math.PI * 2;
+      const a = (k / veh.legCount) * Math.PI * 2 + Math.PI / veh.legCount; // matches the model
       const px = x + Math.cos(a) * veh.legRadius, py = y + Math.sin(a) * veh.legRadius;
       pads.push({ h: this.terrain.height(px, py), rock: this.terrain.rockHeightAt(px, py) });
     }
