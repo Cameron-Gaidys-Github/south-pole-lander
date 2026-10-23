@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { MOON } from '../core/constants.js';
 import { mapToDir } from '../core/terrain.js';
 import { visibilityGrid, sunVisibility } from '../core/illumination.js';
+import { makeTerrainMaterial, attachTerrainAttributes } from './terrainMaterial.js';
 
 const DEG = Math.PI / 180;
 
@@ -172,7 +173,7 @@ export class World {
     this.bounce = new THREE.HemisphereLight(0x000000, 0xb8b0a2, 0.7);
     this.scene.add(this.bounce);
 
-    this.terrainMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    this.terrainMat = makeTerrainMaterial();
     this.groups = new THREE.Group();
     this.scene.add(this.groups);
 
@@ -186,9 +187,33 @@ export class World {
     this.earthDist = earthDist;
     this.scene.add(this.earth);
 
+    this.makeEnvironment(renderer);
     this.stars = this.makeStars();
     this.stars.visible = false;
     this.scene.add(this.stars);
+  }
+
+  /** Reflection environment for the vehicle: black sky, grey regolith, glare toward the Sun. */
+  makeEnvironment(renderer) {
+    const env = new THREE.Scene();
+    const sd = sunDirection(this.sunAz, this.sunEl);
+    const geo = new THREE.SphereGeometry(10, 64, 32);
+    const col = [];
+    const p = geo.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const v = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i)).normalize();
+      const w = v; // the environment is sampled by world direction (Z-up here)
+      const below = w.z < 0;
+      const toward = Math.max(0, w.dot(new THREE.Vector3(sd.x, sd.y, 0).normalize()));
+      let c = below ? 0.22 + 0.5 * Math.pow(toward, 3) : 0.0;
+      if (!below && w.dot(sd) > 0.9995) c = 40;
+      col.push(c, c * 0.98, c * 0.95);
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    env.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+    const pm = new THREE.PMREMGenerator(renderer);
+    this.scene.environment = pm.fromScene(env, 0.02).texture;
+    pm.dispose();
   }
 
   makeStars() {
@@ -211,7 +236,7 @@ export class World {
     const regStride = T.regional.n > 600 ? 4 : 2;
     const visReg = visibilityGrid(T, T.regional, this.sunAz, this.sunEl, regStride);
     onProgress('Tracing sunlight at the landing site', 0.45); await tick();
-    const siteStride = T.site.n > 700 ? 2 : 1;
+    const siteStride = T.site.n > 1100 ? 2 : 1;
     const visSite = visibilityGrid(T, T.site, this.sunAz, this.sunEl, siteStride);
     onProgress('Building terrain', 0.8); await tick();
     const reg = new THREE.Mesh(buildGridMesh(T, T.regional, regStride, visReg, T.site.half - 120), this.terrainMat);
@@ -219,6 +244,7 @@ export class World {
     const far = new THREE.Mesh(buildFarField(T, T.regional.half * 0.97, 700000), this.terrainMat);
     this.groups.add(far, reg, site);
     this.terrainMeshes = [far, reg, site];
+    for (const m of this.terrainMeshes) attachTerrainAttributes(m.geometry);
     this.buildRocks();
     this.siteVis = visSite;
     this.regVis = visReg;
@@ -263,13 +289,14 @@ export class World {
   updateSun() {
     const d = sunDirection(this.sunAz, this.sunEl);
     this.sunDir = d;
+    this.terrainMat.uniforms.uSun.value.copy(d);
     this.sun.position.copy(d).multiplyScalar(3000);
     this.sun.target.position.set(0, 0, 0);
   }
 
   setEnhanced(on) {
     this.enhanced = on;
-    for (const m of this.terrainMeshes || []) shadeTerrain(m.geometry, this.sunDir, on);
+    this.terrainMat.uniforms.uFill.value = on ? 0.16 : 0;
     this.ambient.intensity = on ? 0.6 : 0.18;
     this.fill.intensity = on ? 0.9 : 0;
   }

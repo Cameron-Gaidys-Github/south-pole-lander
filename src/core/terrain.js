@@ -197,7 +197,7 @@ function stampCrater(hf, cx, cy, R, depth, rimH) {
  * size-frequency distribution typical of old highland terrain.
  * It is NOT measured topography.
  */
-export function makeAnalogTerrain({ seed = 1969, regionalSize = 513, siteSize = 513 } = {}) {
+export function makeAnalogTerrain({ seed = 1969, regionalSize = 513, siteSize = 769 } = {}) {
   const noise = makeNoise(seed);
   const rnd = mulberry32(seed + 7);
 

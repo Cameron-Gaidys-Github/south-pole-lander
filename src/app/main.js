@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { VEHICLES } from '../core/vehicles.js';
 import { Terrain, makeAnalogTerrain, heightfieldFromBuffers, loadHeightfield, mapToMCI, dirToMap } from '../core/terrain.js';
 import { Simulation, SCENARIOS, localFrame, gravityAt } from '../core/sim.js';
@@ -10,6 +9,7 @@ import { buildLander, updatePlumes } from './landers.js';
 import { Dust } from './dust.js';
 import { Minimap } from './minimap.js';
 import { Stick, keys } from './input.js';
+import { CameraRig, VIEW_LABEL } from './camera.js';
 import * as V from '../core/vec.js';
 
 const $ = (id) => document.getElementById(id);
@@ -29,9 +29,7 @@ renderer.toneMappingExposure = 1.3;
 $('view').appendChild(renderer.domElement);
 const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 3e6);
 camera.up.set(0, 0, 1);
-const orbit = new OrbitControls(camera, renderer.domElement);
-orbit.enabled = false;
-orbit.enableDamping = true;
+const rig = new CameraRig(camera, renderer.domElement);
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -54,9 +52,7 @@ if (!SCENARIOS[cfg.scenario]) cfg.scenario = 'pdi';
 
 let terrain = null, world = null, sim = null, model = null, dust = null, minimap = null;
 let builtSunAz = null, builtTerrain = null;
-let warp = 1, paused = false, camMode = 'chase', running = false;
-const CAMS = ['chase', 'cabin', 'ground', 'orbit'];
-const CAM_LABEL = { chase: 'CHASE', cabin: 'CABIN', ground: 'TRACKER', orbit: 'FREE' };
+let warp = 1, paused = false, running = false;
 
 // ---------------- setup sheet ----------------
 function vehicleCard(v) {
@@ -154,8 +150,7 @@ async function startFlight() {
   $('hudTop').hidden = false; $('hudBottom').hidden = false;
   running = true;
   lastEventCount = 0;
-  if (camMode === 'orbit') setCam('chase');
-  chaseInit = false;
+  rig.resetAll();
 }
 
 function showSetup() {
@@ -170,7 +165,7 @@ $('startBtn').addEventListener('click', startFlight);
 $('againBtn').addEventListener('click', startFlight);
 $('setupBtn').addEventListener('click', showSetup);
 $('menuBtn').addEventListener('click', showSetup);
-$('lookBtn').addEventListener('click', () => { $('result').hidden = true; setCam('orbit'); });
+$('lookBtn').addEventListener('click', () => { $('result').hidden = true; rig.setMode('chase'); rig.target.chase.zoom = 2.5; $('camBtn').textContent = VIEW_LABEL.chase; });
 
 // ---------------- controls ----------------
 const stick = new Stick($('stick'), $('knob'));
@@ -201,16 +196,7 @@ function setWarp(w) {
 }
 for (const x of [1, 4, 16]) $('w' + x).addEventListener('click', () => { if (x === 1 || (sim?.mode === 'AUTO' && sim.altitude > 1500)) setWarp(x); });
 
-function setCam(m) {
-  camMode = m;
-  $('camBtn').textContent = CAM_LABEL[m];
-  orbit.enabled = m === 'orbit';
-  if (m === 'orbit' && sim) {
-    const p = mciToWorld(sim.r);
-    orbit.target.copy(p).add(new THREE.Vector3(0, 0, model.height * 0.4).applyQuaternion(model.root.quaternion));
-  }
-}
-$('camBtn').addEventListener('click', () => setCam(CAMS[(CAMS.indexOf(camMode) + 1) % CAMS.length]));
+$('camBtn').addEventListener('click', () => { $('camBtn').textContent = VIEW_LABEL[rig.next()]; });
 $('pauseBtn').addEventListener('click', () => { paused = !paused; $('pauseBtn').textContent = paused ? 'RESUME' : 'PAUSE'; });
 
 function nudgeRate(d) {
@@ -229,6 +215,7 @@ $('engineSwap').addEventListener('click', () => {
 window.addEventListener('keydown', (e) => {
   if (!running || !sim) return;
   if (e.key === 'c' || e.key === 'C') $('camBtn').click();
+  if (e.key === 'v' || e.key === 'V') rig.reset();
   if (e.key === 'p' || e.key === 'P') $('pauseBtn').click();
   if (e.key === '1') $('w1').click();
   if (e.key === '2') $('w4').click();
@@ -335,8 +322,6 @@ function showResult() {
 
 // ---------------- cameras ----------------
 const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), q = new THREE.Quaternion();
-const chaseOffset = new THREE.Vector3();
-let chaseInit = false;
 
 function placeModel() {
   const p = mciToWorld(sim.r);
@@ -353,53 +338,31 @@ function placeModel() {
   return { p, fr };
 }
 
+function groundClear(pos, margin) {
+  // push a world-space point up so it stays `margin` metres above the terrain
+  const cr = [pos.x, pos.y, pos.z + MOON.radius];
+  const [cx, cy] = dirToMap(...V.norm(cr));
+  const minR = MOON.radius + sim.terrain.height(cx, cy) + margin;
+  const r = Math.hypot(...cr);
+  if (r < minR) { const k = minR / r; pos.set(cr[0] * k, cr[1] * k, cr[2] * k - MOON.radius); }
+  return pos;
+}
+const groundCamPos = new THREE.Vector3();
+let groundCamFor = null;
+
 function updateCamera(dt) {
   const { p, fr } = placeModel();
-  const up = new THREE.Vector3(...fr.up);
-  const fwd = new THREE.Vector3(...fr.fwd);
-  const left = new THREE.Vector3(...fr.left);
-  const H = model.height;
-  const centre = p.clone().addScaledVector(up, H * 0.45);
-  camera.up.copy(up);
-  if (camMode === 'chase') {
-    const alt = Math.max(0, sim.altitude);
-    const dist = H * 1.9 + Math.min(alt * 0.004, 60);
-    // smooth the camera's offset from the vehicle, not its absolute position,
-    // so it keeps up at orbital speed
-    const want = tmp.set(0, 0, 0).addScaledVector(fwd, -dist).addScaledVector(left, dist * 0.35).addScaledVector(up, dist * 0.25 + 4);
-    if (!chaseInit) { chaseOffset.copy(want); chaseInit = true; }
-    chaseOffset.lerp(want, 1 - Math.exp(-dt * 3));
-    camera.position.copy(centre).add(chaseOffset);
-    camera.fov = 55;
-    camera.lookAt(centre);
-  } else if (camMode === 'cabin') {
-    // crew window on the body's +X side, looking out and 35 deg down along the body
-    tmp.set(model.cabinR + 0.6, 0, model.cabinZ).applyQuaternion(model.root.quaternion).add(p);
-    camera.position.copy(tmp);
-    tmp2.set(Math.cos(-35 * DEG), 0, Math.sin(-35 * DEG)).applyQuaternion(model.root.quaternion);
-    camera.up.copy(new THREE.Vector3(0, 0, 1).applyQuaternion(model.root.quaternion));
-    camera.fov = 70;
-    camera.lookAt(tmp.clone().add(tmp2));
-  } else if (camMode === 'ground') {
-    // tracking camera on the ground, 320 m to the side of the target
-    const g = mciToWorld(mapToMCI(-120, 320, sim.terrain.height(-120, 320) + 1.8));
-    camera.position.copy(g);
-    const dist = g.distanceTo(centre);
-    camera.fov = THREE.MathUtils.clamp(2 * Math.atan((H * 3) / dist) / DEG, 2, 55);
-    camera.lookAt(centre);
-  } else if (camMode === 'orbit') {
-    orbit.update();
+  if (groundCamFor !== sim.terrain) {
+    // tracking camera on a tripod 2 m up, 320 m beside the target
+    groundCamPos.copy(mciToWorld(mapToMCI(-120, 320, sim.terrain.height(-120, 320) + 2)));
+    groundCamFor = sim.terrain;
   }
-  camera.updateProjectionMatrix();
-  // keep the camera above the terrain
-  const cr = [camera.position.x, camera.position.y, camera.position.z + MOON.radius];
-  const [cx, cy] = dirToMap(...V.norm(cr));
-  const ch = sim.terrain.height(cx, cy);
-  const camR = Math.hypot(camera.position.x, camera.position.y, camera.position.z + MOON.radius);
-  if (camR < MOON.radius + ch + 1.5 && camMode !== 'orbit') {
-    const k = (MOON.radius + ch + 1.5) / camR;
-    camera.position.set(camera.position.x * k, camera.position.y * k, (camera.position.z + MOON.radius) * k - MOON.radius);
-  }
+  rig.keys(keys, dt);
+  rig.update(dt, {
+    base: p, up: new THREE.Vector3(...fr.up), fwd: new THREE.Vector3(...fr.fwd), left: new THREE.Vector3(...fr.left),
+    quat: model.root.quaternion, height: model.height, cabinR: model.cabinR, cabinZ: model.cabinZ,
+    vel: new THREE.Vector3(...sim.vel), altitude: Math.max(0, sim.altitude), groundCam: groundCamPos, groundClear,
+  });
   world.follow(p, camera);
   world.updateVehicleShadow(sim, model);
 }
@@ -448,10 +411,8 @@ function frame() {
   sim = new Simulation({ vehicle: v, terrain, scenario: 'terminal' });
   model = buildLander(v);
   world.scene.add(model.root);
-  camMode = 'ground';
   $('loading').hidden = true;
   $('setup').hidden = false;
-  camMode = 'chase';
   frame();
 })();
 

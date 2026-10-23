@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 
 function steel(color) {
-  return new THREE.MeshStandardMaterial({ color, metalness: 0.15, roughness: 0.38 });
+  return new THREE.MeshStandardMaterial({ color, metalness: 0.85, roughness: 0.32, envMapIntensity: 1.0 });
 }
 const dark = new THREE.MeshStandardMaterial({ color: 0x1b1d22, metalness: 0.2, roughness: 0.7 });
 const gold = new THREE.MeshStandardMaterial({ color: 0xb88a3a, metalness: 0.6, roughness: 0.45 });

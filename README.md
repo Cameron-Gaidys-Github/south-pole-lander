@@ -19,10 +19,12 @@ touchdown judged the way a lander engineer would judge it.
   spirit to Apollo's P63 / P64 / P66.
 - **Failures:** an optional random engine-out during braking. The guidance re-plans; if no landing solution
   exists with the remaining thrust (Blue Moon losing a BE-7 early), it aborts to orbit.
+- **Four camera views** (chase, cabin, ground tracker, top-down): drag to orbit or look around, pinch or scroll
+  to zoom, double-tap to reset.
 - **Three ways to fly:** AUTO; ASSIST, where you steer a velocity target like Apollo's P66; DIRECT,
   rate-command attitude-hold with a throttle.
 - **Light at the pole:** every terrain vertex marches toward the Sun up to 60 km, including the Moon's curvature
-  drop and the 0.53° solar disk. Surfaces use a Lommel–Seeliger regolith law. The vehicle's own shadow (kilometres
+  drop and the 0.53° solar disk. Surfaces use a per-pixel Lommel–Seeliger regolith shader with sub-metre relief that fades with distance. The vehicle's own shadow (kilometres
   long at a 1° Sun) is traced along the ground.
 - **No atmosphere:** black sky, no haze, plume-blown dust flying on ballistic arcs.
 - **Touchdown assessment:** sink rate, drift, attitude, slope across the footpads, boulders under pads, tip-over
