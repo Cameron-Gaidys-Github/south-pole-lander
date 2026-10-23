@@ -17,6 +17,7 @@
 // Neither model carries logos or markings.
 
 import * as THREE from 'three';
+import { buildHLS } from './models/hls.js';
 
 const mat = {
   white: new THREE.MeshStandardMaterial({ color: 0xeceae6, metalness: 0.05, roughness: 0.55 }),
@@ -88,168 +89,6 @@ function makePlume(radius, length, hex) {
   return m;
 }
 
-// ---------------- Starship HLS ----------------
-export function buildHLS(v) {
-  const root = new THREE.Group();
-  const body = new THREE.Group();
-  root.add(body);
-  const R = v.diameter / 2, H = v.height;
-  const zBase = 2.6;            // bottom of the hull above the footpads
-  const zNose = H - 8.5;        // start of the nose fairing
-  const zCabin = H - 12.5;      // cabin floor
-  const zPods = zCabin - 2.2;   // landing thruster pods, just below the cabin
-  const zAirlock = zPods - 6;   // airlock / elevator door
-
-  // Hull: dark engine section, white barrel, rounded nose fairing
-  body.add(lathe([[R * 0.97, zBase], [R, zBase + 0.6], [R, zBase + 4.2]], mat.dark));
-  body.add(lathe([[R, zBase + 4.2], [R, zNose]], mat.white));
-  const nose = [];
-  for (let i = 0; i <= 16; i++) {
-    const t = i / 16;                         // tangent ogive with a blunt cap
-    const r = R * Math.sqrt(Math.max(0, 1 - Math.pow(t, 2.2))) * (1 - 0.08 * t);
-    nose.push([Math.max(r, t > 0.97 ? 0 : 1.1), zNose + t * (H - zNose)]);
-  }
-  nose[nose.length - 1] = [0, H];
-  body.add(lathe(nose, mat.white));
-  // Docking port on the nose
-  const port = lathe([[0.95, H - 0.9], [0.95, H - 0.3], [0.7, H - 0.05], [0, H - 0.05]], mat.grey, 32);
-  body.add(port);
-  // Hull seams (rings) for scale
-  for (let z = zBase + 9; z < zNose; z += 9) {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(R + 0.005, 0.03, 4, 64), mat.grey);
-    ring.position.z = z; body.add(ring);
-  }
-
-  // Crew cabin windows: a row facing +X, above the pods
-  for (let k = -2; k <= 2; k++) {
-    const a = k * 0.12;
-    const w = box(0.12, 0.75, 0.55, mat.glass);
-    onRing(w, a, R + 0.02, zCabin + 2.3);
-    body.add(w);
-  }
-
-  // Landing thruster pods: 6 pods x 3 thrusters, nozzles angled down and out
-  const thrusterMounts = [];
-  for (let k = 0; k < 6; k++) {
-    const a = (k / 6) * Math.PI * 2 + Math.PI / 6;
-    const pod = box(1.1, 1.9, 2.2, mat.white);
-    onRing(pod, a, R + 0.5, zPods);
-    body.add(pod);
-    const cap = box(1.12, 1.92, 0.25, mat.dark);
-    onRing(cap, a, R + 0.5, zPods - 1.1);
-    body.add(cap);
-    for (let j = -1; j <= 1; j++) {
-      const n = bell(0.12, 0.28, 0.55);
-      const ca = a + j * 0.075;
-      n.position.set(Math.cos(ca) * (R + 0.75), Math.sin(ca) * (R + 0.75), zPods - 1.2);
-      body.add(n);
-    }
-    thrusterMounts.push({ pos: new THREE.Vector3(Math.cos(a) * (R + 0.75), Math.sin(a) * (R + 0.75), zPods - 1.7), angle: a });
-  }
-
-  // Solar arrays: five positions at 60 deg, the +X position kept clear.
-  // Stowed flat against the hull for flight; they swing out and face the Sun after landing.
-  const arrays = [];
-  for (let k = 1; k < 6; k++) {
-    const a = (k / 6) * Math.PI * 2;
-    const hinge = new THREE.Group();
-    hinge.position.set(Math.cos(a) * (R + 0.12), Math.sin(a) * (R + 0.12), zAirlock + 1);
-    hinge.rotation.z = a;
-    const panelGroup = new THREE.Group();
-    hinge.add(panelGroup);
-    const panel = box(0.08, 2.6, 15.5, mat.cell);
-    panel.position.set(0, 0, -7.75);
-    panelGroup.add(panel);
-    // cell grid lines
-    for (let s = 1; s < 8; s++) {
-      const line = box(0.09, 2.62, 0.04, mat.grey);
-      line.position.set(0, 0, -s * 1.94);
-      panelGroup.add(line);
-    }
-    body.add(hinge);
-    arrays.push({ hinge, panelGroup, angle: a });
-  }
-
-  // Airlock door and elevator on +X
-  const door = box(0.14, 2.6, 3.2, mat.dark);
-  onRing(door, 0, R + 0.03, zAirlock);
-  body.add(door);
-  const railL = rod([R + 0.25, -1.0, zBase + 0.5], [R + 0.25, -1.0, zAirlock + 1.6], 0.07, mat.grey);
-  const railR = rod([R + 0.25, 1.0, zBase + 0.5], [R + 0.25, 1.0, zAirlock + 1.6], 0.07, mat.grey);
-  body.add(railL, railR);
-  const elevator = new THREE.Group();
-  const floor = box(2.4, 2.2, 0.12, mat.grey);
-  floor.position.set(R + 1.4, 0, 0);
-  elevator.add(floor);
-  for (const [x, y] of [[R + 0.3, -1.05], [R + 0.3, 1.05], [R + 2.5, -1.05], [R + 2.5, 1.05]]) {
-    elevator.add(rod([x, y, 0], [x, y, 2.2], 0.05, mat.grey));
-  }
-  elevator.add(rod([R + 2.5, -1.05, 2.2], [R + 2.5, 1.05, 2.2], 0.05, mat.grey));
-  elevator.position.z = zAirlock - 1.5;
-  body.add(elevator);
-
-  // Engines: 3 sea-level Raptors in the middle, 3 vacuum Raptors outside
-  const bellPos = [];
-  for (let k = 0; k < 3; k++) {
-    const a = (k / 3) * Math.PI * 2;
-    const b = bell(0.32, 0.65, 1.6);
-    b.position.set(Math.cos(a) * 1.1, Math.sin(a) * 1.1, zBase + 0.6);
-    body.add(b);
-    bellPos.push(new THREE.Vector3(b.position.x, b.position.y, zBase - 1.0));
-  }
-  for (let k = 0; k < 3; k++) {
-    const a = (k / 3) * Math.PI * 2 + Math.PI / 3;
-    const b = bell(0.32, 1.15, 2.4);
-    b.position.set(Math.cos(a) * 2.9, Math.sin(a) * 2.9, zBase + 1.2);
-    body.add(b);
-  }
-
-  // Four landing legs, deployed (folded flush to the hull for launch)
-  for (let k = 0; k < v.legCount; k++) {
-    const a = (k / v.legCount) * Math.PI * 2 + Math.PI / 4;
-    const c = Math.cos(a), s = Math.sin(a);
-    const fx = c * v.legRadius, fy = s * v.legRadius;
-    // primary strut from high on the hull, secondary strut from the skirt
-    body.add(rod([c * (R - 0.15), s * (R - 0.15), zBase + 11], [fx, fy, 0.5], 0.38, mat.steel));
-    body.add(rod([c * (R - 0.1), s * (R - 0.1), zBase + 2.0], [fx * 0.97, fy * 0.97, 0.6], 0.26, mat.steel));
-    // fairing strip on the hull where the leg stows
-    const strip = box(0.25, 1.1, 10, mat.grey);
-    onRing(strip, a, R + 0.01, zBase + 6.5);
-    body.add(strip);
-    const pad = lathe([[1.5, 0], [1.55, 0.18], [1.2, 0.4], [0, 0.42]], mat.steel, 24);
-    pad.position.set(fx, fy, 0);
-    body.add(pad);
-  }
-
-  body.traverse(o => { if (o.isMesh) o.castShadow = true; });
-
-  const main = bellPos.map(p => { const pl = makePlume(1.0, 30, 0x8fb4ff); pl.position.copy(p); body.add(pl); return pl; });
-  const landing = thrusterMounts.map(({ pos }) => {
-    const pl = makePlume(0.6, 12, 0xffd9a8);
-    pl.position.copy(pos);
-    const out = new THREE.Vector3(pos.x, pos.y, 0).normalize();
-    pl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), new THREE.Vector3(out.x * 0.3, out.y * 0.3, -0.95).normalize());
-    body.add(pl);
-    return pl;
-  });
-
-  // Post-landing deployment: arrays swing out to face the Sun, elevator descends
-  const elevTop = zAirlock - 1.5, elevBottom = 0.2;
-  function setDeploy(t, sunAzLocal) {
-    const u = THREE.MathUtils.smoothstep(t, 0, 0.6);
-    for (const arr of arrays) {
-      arr.panelGroup.position.x = 1.3 * u;              // stand off from the hull
-      // rotate each panel about its own vertical axis to face the Sun
-      const face = sunAzLocal - arr.angle;
-      arr.panelGroup.rotation.z = face * u;
-    }
-    const e = THREE.MathUtils.smoothstep(t, 0.5, 1);
-    elevator.position.z = elevTop + (elevBottom - elevTop) * e;
-  }
-
-  return { root, plumes: { main, landing }, cabinZ: zCabin + 2.3, cabinR: R, height: H, setDeploy };
-}
-
 // ---------------- Blue Moon MK2 ----------------
 export function buildBlueMoon(v) {
   const root = new THREE.Group();
@@ -311,8 +150,14 @@ export function buildBlueMoon(v) {
   return { root, plumes: { main, landing: [] }, cabinZ: zCab + 1.3, cabinR: 2.2, height: H, setDeploy() {} };
 }
 
-export function buildLander(v) {
-  return v.id === 'hls' ? buildHLS(v) : buildBlueMoon(v);
+/**
+ * Build the visual model for a vehicle. Every model shares one interface:
+ * root, plumes { main[], landing[] }, cabinZ, cabinR, height, setDeploy(t, sunAz),
+ * and optionally setLegs(t), setFinish(f), setDebug(on), parts, nodes, com,
+ * cockpitMount, collision. See src/app/models/common.js for the conventions.
+ */
+export function buildLander(v, opts = {}) {
+  return v.id === 'hls' ? buildHLS(v, opts) : buildBlueMoon(v);
 }
 
 /** Drive plume brightness/length from engine state. */

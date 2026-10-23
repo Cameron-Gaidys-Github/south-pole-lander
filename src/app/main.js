@@ -46,6 +46,7 @@ const cfg = {
   scenario: store.get('scenario', 'pdi'),
   sunAz: store.get('sunAz', 285),
   enhanced: store.get('enhanced', false),
+  finish: store.get('finish', 'paint'),
   failures: false,
 };
 if (!VEHICLES[cfg.vehicle]) cfg.vehicle = 'hls';
@@ -53,7 +54,7 @@ if (!SCENARIOS[cfg.scenario]) cfg.scenario = 'pdi';
 
 let terrain = null, world = null, sim = null, model = null, dust = null, minimap = null;
 let builtSunAz = null, builtTerrain = null;
-let warp = 1, paused = false, running = false, deployT = 0;
+let warp = 1, paused = false, running = false, deployT = 0, legT = 1, debugView = false;
 
 // ---------------- setup sheet ----------------
 function vehicleCard(v) {
@@ -74,6 +75,8 @@ document.querySelectorAll('input[name=veh]').forEach(i => i.addEventListener('ch
 document.querySelectorAll('input[name=scn]').forEach(i => i.addEventListener('change', () => { cfg.scenario = i.value; store.set('scenario', i.value); }));
 $('sunAz').value = cfg.sunAz;
 $('enhanced').checked = cfg.enhanced;
+$('steelHull').checked = cfg.finish === 'steel';
+$('steelHull').addEventListener('change', () => { cfg.finish = $('steelHull').checked ? 'steel' : 'paint'; store.set('finish', cfg.finish); model?.setFinish?.(cfg.finish); });
 $('sunAz').addEventListener('input', () => { cfg.sunAz = +$('sunAz').value; store.set('sunAz', cfg.sunAz); updateSunStatus(); });
 $('enhanced').addEventListener('change', () => { cfg.enhanced = $('enhanced').checked; store.set('enhanced', cfg.enhanced); world?.setEnhanced(cfg.enhanced); });
 $('failures').addEventListener('change', () => { cfg.failures = $('failures').checked; });
@@ -143,8 +146,11 @@ async function startFlight() {
   if (model) world.scene.remove(model.root);
   const v = VEHICLES[cfg.vehicle];
   sim = new Simulation({ vehicle: v, terrain, scenario: cfg.scenario, failures: cfg.failures, seed: (Math.random() * 1e9) | 0 });
-  model = buildLander(v);
+  model = buildLander(v, { finish: cfg.finish });
   world.scene.add(model.root);
+  legT = sim.altitude < LEG_DEPLOY_ALT ? 1 : 0;
+  model.setLegs?.(legT);
+  model.setDebug?.(debugView);
   dust.reset();
   setWarp(1); paused = false; $('pauseBtn').textContent = 'PAUSE';
   syncModeUI();
@@ -265,6 +271,7 @@ function applyPilotInput(dt) {
     else if (ev.type === 'camera') $('camBtn').click();
     else if (ev.type === 'cameraReset') rig.reset();
     else if (ev.type === 'pause') $('pauseBtn').click();
+    else if (ev.type === 'debug') { debugView = !debugView; model.setDebug?.(debugView); }
     else if (ev.type === 'throttleSet') { sim.ctl.throttle = ev.value; }
     else if (ev.type === 'warp') { const w = [1, 4, 16]; const i = Math.max(0, Math.min(2, w.indexOf(warp) + ev.dir)); if (w[i] === 1 || canWarp()) setWarp(w[i]); }
   }
@@ -367,18 +374,16 @@ function showResult() {
 // ---------------- cameras ----------------
 const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), q = new THREE.Quaternion();
 
+const LEG_DEPLOY_ALT = 2500;   // m above ground: legs swing out and extend below this
+
 function placeModel() {
   const p = mciToWorld(sim.r);
   model.root.position.copy(p);
-  const axis = new THREE.Vector3(...sim.axis);
-  // keep a stable roll: body +X toward the along-track direction
+  // sim.q maps body axes to the Moon-centred frame; the world frame is the same
+  // frame shifted to the landing site, so it applies directly (body +Z = thrust,
+  // body +X = windows/elevator side). Roll and yaw now show on the model.
+  model.root.quaternion.set(sim.q[1], sim.q[2], sim.q[3], sim.q[0]);
   const fr = localFrame(...sim.map);
-  const fwd = new THREE.Vector3(...fr.fwd);
-  const x = fwd.clone().sub(axis.clone().multiplyScalar(fwd.dot(axis))).normalize();
-  if (x.lengthSq() < 1e-6) x.set(1, 0, 0);
-  const y = new THREE.Vector3().crossVectors(axis, x);
-  const m = new THREE.Matrix4().makeBasis(x, y, axis);
-  model.root.quaternion.setFromRotationMatrix(m);
   return { p, fr };
 }
 
@@ -428,6 +433,11 @@ function frame() {
   }
   updateCamera(dt);
   updatePlumes(model, sim, performance.now() / 1000);
+  // landing legs: deploy over ~6 s when descending through LEG_DEPLOY_ALT
+  if (model.setLegs) {
+    const want = sim.result || sim.altitude < LEG_DEPLOY_ALT ? 1 : 0;
+    if (legT !== want) { legT = want > legT ? Math.min(1, legT + dt / 6) : Math.max(0, legT - dt / 6); model.setLegs(legT); }
+  }
   if (sim.result && sim.result.outcome === 'LANDED') {
     deployT = Math.min(1, deployT + dt / 25);
     model.setDeploy(deployT, world.sunAz * DEG);
@@ -457,7 +467,7 @@ function frame() {
   await prepareWorld();
   const v = VEHICLES[cfg.vehicle];
   sim = new Simulation({ vehicle: v, terrain, scenario: 'terminal' });
-  model = buildLander(v);
+  model = buildLander(v, { finish: cfg.finish });
   world.scene.add(model.root);
   $('loading').hidden = true;
   $('setup').hidden = false;

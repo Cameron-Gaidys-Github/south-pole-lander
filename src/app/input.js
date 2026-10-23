@@ -106,6 +106,7 @@ export class CrewInput {
       if (c === 'c') events.push({ type: 'camera' });
       if (c === 'v') events.push({ type: 'cameraReset' });
       if (c === 'p') events.push({ type: 'pause' });
+      if (c === 'g') events.push({ type: 'debug' });
       if (c === ']') events.push({ type: 'warp', dir: +1 });
       if (c === '[') events.push({ type: 'warp', dir: -1 });
     }

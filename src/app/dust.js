@@ -30,7 +30,7 @@ export class Dust {
     if (!dt) return;
     const thrust = sim.thrust;
     const e = sim.v.engines[sim.engine];
-    const nozzleH = e.position === 'mid' ? sim.v.height * 0.7 : 0;
+    const nozzleH = e.position === 'mid' ? (e.mountHeight ?? sim.v.height * 0.7) : 0;
     const alt = sim.altitude + nozzleH;
     // onset height grows with the square root of thrust (plume pressure ~ T / h^2)
     const onset = 0.25 * Math.sqrt(thrust) * (e.position === 'mid' ? 0.45 : 1);

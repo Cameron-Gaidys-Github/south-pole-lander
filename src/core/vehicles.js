@@ -42,6 +42,7 @@ export const VEHICLES = {
         isp: 300,               // s, gaseous O2/CH4 (E)
         lag: 0.15,
         position: 'mid',        // high on the body, below the cabin (P); keeps the plume off the regolith
+        mountHeight: 33.3,      // m, thruster exit height above the footpads (E; pods just below the cabin)
       },
     },
     slewRateDeg: 8.0,         // max attitude rate, deg/s (E; Starship flips ~90 deg in seconds)
